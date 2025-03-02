@@ -3195,17 +3195,27 @@ int reactor::do_run() {
     // Start initialization in the background.
     // Communicate when done using _start_promise.
     (void)_cpu_started.wait(smp::count).then([this] {
-        (void)_network_stack->initialize().then([this] {
+        if (this_shard_id() >= 8) {
             _start_promise.set_value();
-        });
+        } else {
+            (void)_network_stack->initialize().then([this] {
+                _start_promise.set_value();
+            });
+        }
     });
     // Wait for network stack in the background and then signal all cpus.
-    (void)_network_stack_ready->then([this] (std::unique_ptr<network_stack> stack) {
-        _network_stack = std::move(stack);
-        return smp::invoke_on_all([] {
+    if (this_shard_id() < 8) {
+        (void)_network_stack_ready->then([this] (std::unique_ptr<network_stack> stack) {
+            _network_stack = std::move(stack);
+            return smp::invoke_on_all([] {
+                engine()._cpu_started.signal();
+            });
+        });
+    } else {
+        smp::invoke_on_all([] {
             engine()._cpu_started.signal();
         });
-    });
+    }
 
     poller syscall_poller(std::make_unique<syscall_pollfn>(*this));
 

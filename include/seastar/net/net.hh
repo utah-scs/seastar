@@ -33,6 +33,8 @@
 #include <seastar/util/assert.hh>
 #include <unordered_map>
 
+#define HW_Q_COUNT 8
+
 namespace seastar {
 
 namespace internal {
@@ -267,7 +269,7 @@ protected:
     size_t _rss_table_bits = 0;
 public:
     device() {
-        _queues = std::make_unique<qp*[]>(smp::count);
+        _queues = std::make_unique<qp*[]>(std::min<unsigned int>(smp::count, HW_Q_COUNT));
     }
     virtual ~device() {};
     qp& queue_for_cpu(unsigned cpu) { return *_queues[cpu]; }

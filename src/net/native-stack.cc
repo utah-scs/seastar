@@ -83,7 +83,8 @@ void create_native_net_device(const native_stack_options& opts) {
     if ( deprecated_config_used) {
 #ifdef SEASTAR_HAVE_DPDK
         if ( opts.dpdk_pmd) {
-             dev = create_dpdk_net_device(opts.dpdk_opts.dpdk_port_index.get_value(), smp::count,
+             dev = create_dpdk_net_device(opts["dpdk-port-index"].as<unsigned>(),
+                            std::min<unsigned int>(smp::count, HW_Q_COUNT),
                 !(opts.lro && opts.lro.get_value() == "off"),
                 !(opts.dpdk_opts.hw_fc && opts.dpdk_opts.hw_fc.get_value() == "off"));
        } else
@@ -116,13 +117,13 @@ void create_native_net_device(const native_stack_options& opts) {
     // set_local_queue on all shard in the background,
     // signal when done.
     // FIXME: handle exceptions
-    for (unsigned i = 0; i < smp::count; i++) {
+    for (unsigned i = 0; i < std::min<unsigned int>(smp::count, HW_Q_COUNT); i++) {
         (void)smp::submit_to(i, [&opts, sdev] {
             uint16_t qid = this_shard_id();
             if (qid < sdev->hw_queues_count()) {
                 auto qp = sdev->init_local_queue(opts, qid);
                 std::map<unsigned, float> cpu_weights;
-                for (unsigned i = sdev->hw_queues_count() + qid % sdev->hw_queues_count(); i < smp::count; i+= sdev->hw_queues_count()) {
+                for (unsigned i = sdev->hw_queues_count() + qid % sdev->hw_queues_count(); i < std::min<unsigned int>(smp::count, HW_Q_COUNT); i+= sdev->hw_queues_count()) {
                     cpu_weights[i] = 1;
                 }
                 cpu_weights[qid] = opts.hw_queue_weight.get_value();
@@ -259,12 +260,16 @@ future<> native_network_stack::run_dhcp(bool is_renew, const dhcp::lease& res) {
     // Hijack the ip-stack.
     auto f = d.get_ipv4_filter();
     return smp::invoke_on_all([f] {
+        if (this_shard_id() >= HW_Q_COUNT)
+            return;
         auto & ns = static_cast<native_network_stack&>(engine().net());
         ns.set_ipv4_packet_filter(f);
     }).then([this, d = std::move(d), is_renew, res = res]() mutable {
         net::dhcp::result_type fut = is_renew ? d.renew(res) : d.discover();
         return fut.then([this, is_renew](std::optional<dhcp::lease> lease) {
             return smp::invoke_on_all([] {
+                if (this_shard_id() >= HW_Q_COUNT)
+                    return;
                 auto & ns = static_cast<native_network_stack&>(engine().net());
                 ns.set_ipv4_packet_filter(nullptr);
             }).then(std::bind(&net::native_network_stack::on_dhcp, this, lease, is_renew));
@@ -287,7 +292,7 @@ void native_network_stack::on_dhcp(std::optional<dhcp::lease> lease, bool is_ren
     if (this_shard_id() == 0) {
         // And the other cpus, which, in the case of initial discovery,
         // will be waiting for us.
-        for (unsigned i = 1; i < smp::count; i++) {
+        for (unsigned i = 1; i < std::min<unsigned int>(smp::count, HW_Q_COUNT); i++) {
             (void)smp::submit_to(i, [lease, is_renew]() {
                 auto & ns = static_cast<native_network_stack&>(engine().net());
                 ns.on_dhcp(lease, is_renew);
