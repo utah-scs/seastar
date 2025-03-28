@@ -33,7 +33,7 @@
 #include <seastar/util/assert.hh>
 #include <unordered_map>
 
-#define HW_Q_COUNT 16
+#define HW_Q_COUNT 8
 
 namespace seastar {
 
